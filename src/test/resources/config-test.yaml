@@ -1,0 +1,16 @@
+llm:
+  endpoint: "https://example.invalid/v1/chat/completions"
+  model: "test-model"
+  apiKeyEnv: "TEST_LLM_API_KEY"
+  timeoutMs: 5000
+
+agent:
+  maxSteps: 5
+
+store:
+  path: "./data/reminders.json"
+
+mail:
+  pollSeconds: 30
+  profile: "TestProfile"
+  folder: "Inbox"
