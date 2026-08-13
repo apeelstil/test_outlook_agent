@@ -8,6 +8,7 @@ import com.testtask.outlookagent.tool.Tool;
 import com.testtask.outlookagent.tool.ToolRegistry;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 
 public class Agent {
 
@@ -34,10 +35,20 @@ public class Agent {
             }
 
             ToolCall toolCall = response.getToolCall();
-            Tool tool = toolRegistry.findByName(toolCall.getToolName())
-                    .orElseThrow(() -> new IllegalStateException("Unknown tool: " + toolCall.getToolName()));
-            Object result = tool.execute(toolCall.getArguments());
-            messages.add(LlmMessage.toolResult(String.valueOf(result)));
+            Optional<Tool> tool = toolRegistry.findByName(toolCall.getToolName());
+            if (!tool.isPresent()) {
+                messages.add(LlmMessage.toolResult("Error: unknown tool requested"));
+                continue;
+            }
+
+            try {
+                Object result = tool.get().execute(toolCall.getArguments());
+                messages.add(LlmMessage.toolResult(String.valueOf(result)));
+            } catch (IllegalArgumentException e) {
+                messages.add(LlmMessage.toolResult("Error: invalid tool arguments - " + e.getMessage()));
+            } catch (RuntimeException e) {
+                messages.add(LlmMessage.toolResult("Error: tool execution failed"));
+            }
         }
 
         throw new IllegalStateException("Max steps exceeded");
