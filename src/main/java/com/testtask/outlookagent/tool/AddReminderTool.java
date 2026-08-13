@@ -33,4 +33,28 @@ public class AddReminderTool implements Tool {
 
         return "Reminder added";
     }
+
+    @Override
+    public String getDescription() {
+        return "Adds a reminder with text and an ISO-8601 due date.";
+    }
+
+    @Override
+    public Map<String, Object> getParametersSchema() {
+        Map<String, Object> textProperty = new java.util.LinkedHashMap<>();
+        textProperty.put("type", "string");
+
+        Map<String, Object> dueIsoProperty = new java.util.LinkedHashMap<>();
+        dueIsoProperty.put("type", "string");
+
+        Map<String, Object> properties = new java.util.LinkedHashMap<>();
+        properties.put("text", textProperty);
+        properties.put("dueIso", dueIsoProperty);
+
+        Map<String, Object> schema = new java.util.LinkedHashMap<>();
+        schema.put("type", "object");
+        schema.put("properties", properties);
+        schema.put("required", java.util.Arrays.asList("text", "dueIso"));
+        return schema;
+    }
 }

@@ -331,7 +331,18 @@ public class HttpLlmClientTest {
         }
 
         public Map<String, Object> getParametersSchema() {
-            return Collections.emptyMap();
+            Map<String, Object> textProperty = new java.util.LinkedHashMap<>();
+            textProperty.put("type", "string");
+            Map<String, Object> dueIsoProperty = new java.util.LinkedHashMap<>();
+            dueIsoProperty.put("type", "string");
+            Map<String, Object> properties = new java.util.LinkedHashMap<>();
+            properties.put("text", textProperty);
+            properties.put("dueIso", dueIsoProperty);
+            Map<String, Object> schema = new java.util.LinkedHashMap<>();
+            schema.put("type", "object");
+            schema.put("properties", properties);
+            schema.put("required", java.util.Arrays.asList("text", "dueIso"));
+            return schema;
         }
     }
 
@@ -352,7 +363,15 @@ public class HttpLlmClientTest {
         }
 
         public Map<String, Object> getParametersSchema() {
-            return Collections.emptyMap();
+            Map<String, Object> queryProperty = new java.util.LinkedHashMap<>();
+            queryProperty.put("type", "string");
+            Map<String, Object> properties = new java.util.LinkedHashMap<>();
+            properties.put("query", queryProperty);
+            Map<String, Object> schema = new java.util.LinkedHashMap<>();
+            schema.put("type", "object");
+            schema.put("properties", properties);
+            schema.put("required", Collections.singletonList("query"));
+            return schema;
         }
     }
 

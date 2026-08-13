@@ -26,4 +26,24 @@ public class FindItemsTool implements Tool {
 
         return store.find((String) query);
     }
+
+    @Override
+    public String getDescription() {
+        return "Finds stored reminders matching a query.";
+    }
+
+    @Override
+    public Map<String, Object> getParametersSchema() {
+        Map<String, Object> queryProperty = new java.util.LinkedHashMap<>();
+        queryProperty.put("type", "string");
+
+        Map<String, Object> properties = new java.util.LinkedHashMap<>();
+        properties.put("query", queryProperty);
+
+        Map<String, Object> schema = new java.util.LinkedHashMap<>();
+        schema.put("type", "object");
+        schema.put("properties", properties);
+        schema.put("required", java.util.Collections.singletonList("query"));
+        return schema;
+    }
 }

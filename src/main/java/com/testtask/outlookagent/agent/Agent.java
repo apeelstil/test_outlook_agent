@@ -42,17 +42,17 @@ public class Agent {
             ToolCall toolCall = response.getToolCall();
             Optional<Tool> tool = toolRegistry.findByName(toolCall.getToolName());
             if (!tool.isPresent()) {
-                messages.add(LlmMessage.toolResult("Error: unknown tool requested"));
+                messages.add(LlmMessage.toolResult("Error: unknown tool requested", toolCall.getId()));
                 continue;
             }
 
             try {
                 Object result = tool.get().execute(toolCall.getArguments());
-                messages.add(LlmMessage.toolResult(String.valueOf(result)));
+                messages.add(LlmMessage.toolResult(String.valueOf(result), toolCall.getId()));
             } catch (IllegalArgumentException e) {
-                messages.add(LlmMessage.toolResult("Error: invalid tool arguments - " + e.getMessage()));
+                messages.add(LlmMessage.toolResult("Error: invalid tool arguments - " + e.getMessage(), toolCall.getId()));
             } catch (RuntimeException e) {
-                messages.add(LlmMessage.toolResult("Error: tool execution failed"));
+                messages.add(LlmMessage.toolResult("Error: tool execution failed", toolCall.getId()));
             }
         }
 
