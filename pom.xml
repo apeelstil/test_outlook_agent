@@ -85,7 +85,7 @@
                         <configuration>
                             <transformers>
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
-                                    <mainClass>com.testtask.outlookagent.app.MockDemoRunner</mainClass>
+                                    <mainClass>com.testtask.outlookagent.app.Main</mainClass>
                                 </transformer>
                             </transformers>
                         </configuration>
