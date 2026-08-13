@@ -17,3 +17,11 @@ secrets.yml
 secrets.yaml
 
 config.yaml
+# Claude Code local data
+.claude/
+
+# Runtime data
+data/
+
+# Local logs
+*.log
