@@ -8,6 +8,7 @@ import com.testtask.outlookagent.store.SeenStore;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -32,7 +33,15 @@ public class MailProcessor {
     }
 
     public void processUnread() {
-        for (Msg msg : mailChannel.fetchUnread()) {
+        List<Msg> messages;
+        try {
+            messages = mailChannel.fetchUnread();
+        } catch (RuntimeException e) {
+            logger.warn("event=mail_fetch_failed");
+            return;
+        }
+
+        for (Msg msg : messages) {
             if (seenStore.isSeen(msg.getId())) {
                 continue;
             }
