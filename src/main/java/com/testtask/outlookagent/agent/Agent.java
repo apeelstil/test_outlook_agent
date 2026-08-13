@@ -28,7 +28,12 @@ public class Agent {
         List<Tool> tools = toolRegistry.getAll();
 
         for (int step = 0; step < maxSteps; step++) {
-            LlmResponse response = llmClient.chat(messages, tools);
+            LlmResponse response;
+            try {
+                response = llmClient.chat(messages, tools);
+            } catch (RuntimeException e) {
+                return "Unable to process request at this time";
+            }
 
             if (!response.isToolCall()) {
                 return response.getFinalAnswer();
