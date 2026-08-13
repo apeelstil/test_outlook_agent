@@ -51,6 +51,6 @@ public class Agent {
             }
         }
 
-        throw new IllegalStateException("Max steps exceeded");
+        return "Unable to complete request within step limit";
     }
 }
