@@ -9,6 +9,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.List;
+import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -46,7 +47,14 @@ public class MailProcessor {
                 continue;
             }
 
-            String replyBody = agent.run(msg.getBody());
+            Optional<String> pendingReply = seenStore.getPendingReply(msg.getId());
+            String replyBody;
+            if (pendingReply.isPresent()) {
+                replyBody = pendingReply.get();
+            } else {
+                replyBody = agent.run(msg.getBody());
+                seenStore.savePendingReply(msg.getId(), replyBody);
+            }
 
             try {
                 mailChannel.reply(msg, replyBody);
