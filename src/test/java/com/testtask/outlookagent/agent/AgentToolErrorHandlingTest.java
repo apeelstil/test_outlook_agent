@@ -74,8 +74,8 @@ public class AgentToolErrorHandlingTest {
         assertTrue("Second LLM call must include a tool-result message describing the error",
                 toolResultMessage != null);
         String errorContent = toolResultMessage.getContent().toLowerCase();
-        assertTrue("Error content should mention the missing argument",
-                errorContent.contains("value"));
+        assertTrue("Error content should indicate invalid tool arguments via a generic marker",
+                errorContent.contains("invalid") && errorContent.contains("argument"));
         assertFalse("Error content must not contain a stacktrace",
                 errorContent.contains(".java:") || errorContent.contains("at com.testtask"));
     }

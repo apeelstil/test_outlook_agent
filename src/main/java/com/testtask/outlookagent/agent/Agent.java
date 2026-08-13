@@ -70,7 +70,7 @@ public class Agent {
                 Object result = tool.get().execute(toolCall.getArguments());
                 messages.add(LlmMessage.toolResult(String.valueOf(result), toolCall.getId()));
             } catch (IllegalArgumentException e) {
-                messages.add(LlmMessage.toolResult("Error: invalid tool arguments - " + e.getMessage(), toolCall.getId()));
+                messages.add(LlmMessage.toolResult("Error: invalid tool arguments", toolCall.getId()));
             } catch (RuntimeException e) {
                 messages.add(LlmMessage.toolResult("Error: tool execution failed", toolCall.getId()));
             }
