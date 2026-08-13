@@ -1,213 +1,227 @@
 # Outlook AI Agent
 
-Мини-агент, который через Outlook читает непрочитанные письма, прогоняет их текст через
-LLM (с доступом к нескольким инструментам — reminder'ы, текущая дата/время, поиск), отвечает
-на письмо и отмечает его прочитанным.   
+Mini-agent that polls unread Outlook mail, runs each message body through an LLM tool-loop
+(reminders, current date/time, search), replies to the sender, and durably marks the message
+processed so it isn't answered twice.
 
-## Архитектура
+## Architecture
 
-Слои (пакеты под `com.testtask.outlookagent`):
+Packages under `com.testtask.outlookagent`:
 
-- `mail` — `MailChannel` (интерфейс) + `MailProcessor` (оркестрация: fetch → agent → reply →
-  markSeen). `mail.outlook` — `OutlookMailChannel` и `JacobOutlookComFacade` (реальный Outlook
-  через JACOB), `MockMailChannel` — Outlook-free реализация для тестов и mock-demo.
-- `agent` — `Agent`: цикл LLM ↔ tool-calls (до `agent.maxSteps` шагов), безопасная обработка
-  ошибок LLM и инструментов.
-- `tool` — `Tool` (интерфейс), `ToolRegistry`, конкретные инструменты (`CurrentDateTimeTool`,
+- `mail` — `MailChannel` (interface) + `MailProcessor` (fetch → dedup → agent → reply →
+  mark-processed, one message at a time). `mail.outlook` — `OutlookMailChannel` and
+  `JacobOutlookComFacade` (real Outlook via JACOB), `MockMailChannel` — Outlook-free
+  implementation for tests and mock-demo.
+- `agent` — `Agent`: LLM ↔ tool-call loop, capped at `agent.maxSteps` steps, never lets a bad
+  tool call or LLM error escape as an exception.
+- `tool` — `Tool` interface, `ToolRegistry`, and the tools (`CurrentDateTimeTool`,
   `AddReminderTool`, `FindItemsTool`).
-- `llm` — `LlmClient` (интерфейс) и `HttpLlmClient` — OpenAI-совместимый chat-completions клиент
-  поверх `HttpURLConnection`.
-- `store` — `FileSeenStore` (idempotency), `FileReminderStore` (напоминания) — JSON-файлы на
-  диске.
-- `audit` — `FileAuditJournal` — append-only, hash-chained (SHA-256) текстовый журнал событий
-  без ПДн; `NoOpAuditJournal` — заглушка для тестов.
-- `config` — `AppConfig`/`ConfigLoader` (YAML) и `EnvSecretResolver` (секрет только из env).
-- `app` — сборка приложения: `ApplicationFactory`/`ProductionLauncher` (production wiring),
-  `PollingLoop` (периодический опрос), `MockDemoRunner` (Outlook/network-free демо), `Main`
-  (единственная исполняемая точка входа).
+- `llm` — `LlmClient` interface and `HttpLlmClient`, an OpenAI-compatible chat-completions
+  client on `HttpURLConnection`.
+- `store` — `FileSeenStore` (idempotency + pending-reply durability), `FileReminderStore` —
+  plain JSON files on disk.
+- `audit` — `FileAuditJournal`, append-only, SHA-256 hash-chained, no PII; `NoOpAuditJournal`
+  for tests.
+- `config` — `AppConfig`/`ConfigLoader` (YAML) and `EnvSecretResolver` (secret from env only).
+- `app` — `ApplicationFactory`/`ProductionLauncher` (wiring), `PollingLoop`, `MockDemoRunner`,
+  `Main` (the one executable entry point).
 
-## Flow одного письма
+## Processing one message
 
-1. `MailProcessor.processUnread()` вызывает `MailChannel.fetchUnread()`.
-2. Для каждого письма, если `msg.getId()` уже есть в `SeenStore` — пропускаем (idempotency по
-   стабильному message id, а не по содержимому).
-3. `Agent.run(msg.getBody())` — цикл с LLM: LLM либо зовёт инструмент (`tool_call`), либо
-   возвращает финальный ответ. Каждый `tool_call` пишется в audit (`agent_tool_call`,
-   только имя зарегистрированного инструмента, без аргументов).
-4. `MailChannel.reply(msg, replyBody)` — ответ отправляется **раньше**, чем письмо помечается
-   прочитанным.
-5. `SeenStore.markSeen(msg.getId())` — только после успешной отправки ответа; в audit пишется
-   `agent_mail_seen` с SHA-256-хэшем message id (не сам id и не содержимое письма).
+`MailProcessor.processUnread()`:
 
-Порядок `reply → markSeen` осознанно фиксирован: если процесс упадёt между шагами 4 и 5, письмо
-будет обработано (ответ уже отправлен), но не помечено как seen — при следующем запуске агент
-попытается ответить на него повторно. Это известное **crash-window**: между «ответ отправлен» и
-«факт этого durable-зафиксирован» есть небольшой интервал без атомарности. Задваивание ответа в
-этом окне возможно; полная атомарность потребовала бы транзакционного Outlook API, которого нет.
+1. `mailChannel.fetchUnread()`. If this throws, log `event=mail_fetch_failed` and return — no
+   messages are lost, they'll show up unread on the next poll.
+2. For each message, skip it if `seenStore.isSeen(msg.getId())` — dedup key is the stable
+   message id (Outlook `EntryID`), never subject/body.
+3. Otherwise, process the message. If `getPendingReply(msg.getId())` already has a value from
+   an earlier, incomplete attempt, reuse it instead of calling the agent again — this is what
+   stops a retried delivery from re-running `add_reminder` or any other side-effecting tool.
+   Otherwise call `agent.run(msg.getBody())` and immediately `savePendingReply(...)` before
+   attempting delivery.
+4. `mailChannel.reply(msg, replyBody)`.
+5. `seenStore.markSeen(msg.getId())` — clears the pending reply and adds the id to the seen
+   set. Only after this point is the message considered processed.
 
-## Стек и сборка
+Each message runs in its own try/catch inside the loop (`event=mail_message_processing_failed`
+on failure), so one message failing at any step — agent, reply, or the seen-store write — does
+not stop the rest of the batch from being processed.
 
-Java 8, Maven, JUnit 4, SLF4J + Logback (структурные event-key логи, без ПДн), YAML
-(`org.yaml.snakeyaml` + `jackson-databind` для парсинга), `net.sf.jacob-project:jacob:1.20`
-(JACOB) — единственный способ доступа к Outlook, только через COM Object Model.
+### Remaining crash window
+
+`reply()` and the durable `markSeen()` write are not one atomic operation — there's no
+transactional API tying Outlook and the local seen-store together. If the process crashes
+between a successful `reply()` and the following disk write, the next run will see the message
+as still-pending and send another reply (the pending-reply value is reused, so no tool runs
+twice, but the mail itself can go out twice). This window is small and only matters across a
+crash at that exact instant; full atomicity would need a distributed transaction, which is out
+of scope. This is a known, accepted limitation, not something the tests treat as a defect.
+
+## Stack and build
+
+Java 8, Maven, JUnit 4, SLF4J + Logback (structured `event=...` logs, no PII), YAML
+(`org.yaml.snakeyaml` + `jackson-databind`), `net.sf.jacob-project:jacob:1.20` (JACOB) — the
+only way this project talks to Outlook, strictly through the COM Object Model.
 
 ```bash
-mvn clean test        # JACOB исключён из test classpath (surefire classpathDependencyExcludes) —
-                       # зелено на машине без Outlook/JACOB native runtime
-mvn clean package      # fat-jar через maven-shade-plugin, Main-Class = com.testtask.outlookagent.app.Main
+mvn clean test        # JACOB is excluded from the test classpath (surefire
+                       # classpathDependencyExcludes) — green on a machine without Outlook/JACOB
+mvn clean package      # fat-jar via maven-shade-plugin, Main-Class = com.testtask.outlookagent.app.Main
 ```
 
-## Запуск mock-demo
+## Running the mock demo
 
-Не требует Outlook, JACOB native runtime или сети. Использует `MockMailChannel`, скриптованный
-`LlmClient` и временную директорию для стораджей/audit:
+No Outlook, no native JACOB runtime, no network. Uses `MockMailChannel`, a scripted `LlmClient`,
+and a temp directory for storage/audit:
 
 ```bash
 java -jar target/outlook-agent-1.0-SNAPSHOT.jar mock-demo
 ```
 
-## Production-запуск
+## Running against real Outlook
 
 ```bash
 java -jar target/outlook-agent-1.0-SNAPSHOT.jar path/to/config.yaml
-# без аргумента — по умолчанию ищет ./config.yaml
+# no argument — defaults to ./config.yaml
 ```
 
-Требует:
+Requires:
 
-- Windows с установленным и **уже запущенным/залогиненным** Outlook (профиль из `mail.profile`);
-- переменную окружения с API-ключом LLM, имя которой задано в `llm.apiKeyEnv`;
-- `jacob-1.20-x64.dll` (или `-x86.dll` под 32-битную JVM) **отдельно** — рядом с `java.exe`
-  или в `-Djava.library.path`. Файл **не входит** в репозиторий и не входит в fat-jar (см. ниже).
+- Windows with Outlook already installed and running/signed in (the profile named in
+  `mail.profile`);
+- an environment variable holding the LLM API key, named by `llm.apiKeyEnv`;
+- `jacob-1.20-x64.dll` (or `-x86.dll` for a 32-bit JVM) next to `java.exe` or on
+  `-Djava.library.path`. It is **not** in the repo and **not** in the fat-jar (see below).
 
-Live-проверка на реальном Outlook в этой сессии **не выполнялась** — статус:
-`requires target environment verification`.
+**Live Outlook/JACOB verification has not been run in this local environment** — it lacks the
+required setup (Classic Outlook and the native JACOB runtime/DLL) for a real COM session. The
+integration is covered by automated tests against a fake COM facade, not by a live run; it still
+needs verification on the target Windows/Outlook environment. JACOB 1.20 itself is present as a
+Java dependency (`net.sf.jacob-project:jacob:1.20`) — only the native DLL is missing here.
 
-## YAML-конфиг
+## YAML config
 
-`config.example.yaml` — шаблон без секретных значений, безопасен для коммита. Локальный рабочий
-`config.yaml` — в `.gitignore`, в Git не попадает.
-
-Обязательные поля:
+`config.example.yaml` is a template with no secrets, safe to commit. The working `config.yaml`
+is gitignored.
 
 ```yaml
 llm:
-  endpoint: "..."      # URL chat-completions endpoint, OpenAI-совместимый
+  endpoint: "..."      # OpenAI-compatible chat-completions URL
   model: "..."
-  apiKeyEnv: "..."     # имя переменной окружения с API-ключом (не сам ключ)
+  apiKeyEnv: "..."     # name of the env var holding the API key — not the key itself
   timeoutMs: 15000
 
 agent:
-  maxSteps: 5          # ограничение на число tool-call шагов на одно письмо
+  maxSteps: 5          # cap on tool-call steps per message
 
 store:
-  path: "./data/reminders.json"   # seen.json и audit.log создаются рядом (resolveSibling)
+  path: "./data/reminders.json"   # seen.json and audit.log live next to this (resolveSibling)
 
 mail:
   pollSeconds: 30
-  profile: "..."       # имя почтового хранилища (top-level store) в Outlook
-  folder: "..."        # имя папки внутри этого хранилища
+  profile: "..."       # top-level Outlook store name
+  folder: "..."        # folder name within that store
 ```
 
-### `llm.apiKeyEnv`
+`EnvSecretResolver` reads `llm.apiKeyEnv`'s value at startup. If the variable is unset or empty,
+it throws `MissingSecretException` — production fails fast at startup with a clear error instead
+of an NPE later.
 
-Сам API-ключ **никогда** не хранится в конфиге/коде/git — только имя переменной окружения.
-`EnvSecretResolver` читает её значение в момент запуска; если переменная не задана или пуста —
-`MissingSecretException` (production падает на старте с понятной ошибкой, а не с NPE в рантайме).
+## Outlook / JACOB
 
-## Outlook / JACOB setup
+- Access goes through `com.jacob-project:jacob:1.20` only (`Outlook.Application` →
+  `Namespace("MAPI")` → `Folders` → `Items`), not MAPI/EWS/Graph directly.
+- JACOB loads a native DLL on class init, so it's excluded from the test classpath
+  (`surefire.classpathDependencyExcludes`) — `mvn test` stays green without Outlook installed.
+- `JacobOutlookComFacade` never calls `Application.Quit` — it attaches to whatever Outlook
+  session is already running. Uses `ComThread.InitSTA()`/`Release()` per JACOB's MAPI threading
+  requirement.
+- Outlook's own "read" flag is never touched — dedup is entirely the local seen-store's job, by
+  message id.
 
-- Доступ к Outlook — только через `com.jacob-project:jacob:1.20` (COM Object Model,
-  `Outlook.Application` → `Namespace("MAPI")` → `Folders` → `Items`), не MAPI/EWS/Graph напрямую.
-- JACOB загружает нативную DLL при инициализации класса — поэтому она **исключена** из test
-  classpath (`maven.compiler` не при чём, это `surefire.classpathDependencyExcludes`), и `mvn
-  test` остаётся зелёным на машине без Outlook.
-- `JacobOutlookComFacade` не вызывает `Application.Quit` — не завершает уже запущенный у
-  пользователя Outlook. Использует `ComThread.InitSTA()`/`Release()` — по документации JACOB
-  MAPI требует STA-поток.
+### Vendored JACOB 1.20 jar
 
-### Происхождение vendored JACOB 1.20 JAR
+`vendor/maven-repo/net/sf/jacob-project/jacob/1.20/` is a minimal project-local Maven repo
+(`file://` in `pom.xml`) so the dependency resolves without `mvn install:install-file`.
+Provenance (release source, SHA-256, LGPL v2.1 license) is in
+`vendor/maven-repo/net/sf/jacob-project/jacob/1.20/PROVENANCE.md`. The native DLL from the
+official zip is deliberately **not** extracted or committed — only `jacob-1.20.jar` and
+`LICENSE.TXT`.
 
-`vendor/maven-repo/net/sf/jacob-project/jacob/1.20/` — минимальный project-local Maven-репозиторий
-(`file://` в `pom.xml`), чтобы зависимость резолвилась без `mvn install:install-file`. Подробная
-провенанс-запись (источник релиза, SHA-256, лицензия LGPL v2.1) — в
-`vendor/maven-repo/net/sf/jacob-project/jacob/1.20/PROVENANCE.md`. **Нативные DLL из официального
-zip сознательно не извлечены и не закоммичены** — только `jacob-1.20.jar` и `LICENSE.TXT`.
+### External `jacob-1.20-x64.dll`
 
-### Внешний `jacob-1.20-x64.dll`
+Not in the repo, can't be in the fat-jar (native, JVM-bitness-specific). Get it from the
+official JACOB 1.20 release
+(https://github.com/freemansoft/jacob-project/releases/tag/Root_B-1_20 — same archive the
+provenance file describes extracting the jar from) and place it on the target Windows machine
+next to `java.exe`, or point `-Djava.library.path` at it.
 
-Не входит в репозиторий и не может быть частью fat-jar (нативный код, JVM bitness-specific).
-Взять из официального релиза JACOB 1.20
-(https://github.com/freemansoft/jacob-project/releases/tag/Root_B-1_20, тот же архив, из которого
-провенанс-запись описывает извлечение JAR) и разместить в целевой Windows-среде рядом с `java.exe`
-или указать `-Djava.library.path`.
+## Storage
 
-## Reminder / seen / audit storage
+All three stores are plain files, resolved from `store.path` via `resolveSibling` (see `Main`):
 
-Все три — простые файлы на диске, путь для `seen.json` и `audit.log` вычисляется от
-`store.path` через `resolveSibling` (см. `Main`):
+- `FileReminderStore` (`store.path`, default `./data/reminders.json`) — JSON list of reminders
+  (`text`, `dueIso`), read/written by `AddReminderTool`/`FindItemsTool`.
+- `FileSeenStore` (`seen.json`) — processed message ids plus any pending (not-yet-delivered)
+  reply bodies; restart-safe.
+- `FileAuditJournal` (`audit.log`) — append-only, SHA-256 hash-chained
+  (`verifyChainIntegrity()` detects any retroactive edit).
 
-- `FileReminderStore` (`store.path`, по умолчанию `./data/reminders.json`) — JSON-список
-  напоминаний (`text`, `dueIso`), пишет/читает `AddReminderTool`/`FindItemsTool`.
-- `FileSeenStore` (`seen.json`) — множество обработанных message id, restart-safe.
-- `FileAuditJournal` (`audit.log`) — append-only текстовый файл, каждая строка — событие с
-  SHA-256 hash-chain к предыдущей строке (`verifyChainIntegrity()` детектирует любую правку
-  задним числом).
+None of these files or their parent directories need to exist beforehand — each store creates
+its parent directory (`Files.createDirectories`) lazily on first write.
+
+## Logging
+
+Structured `event=...` keys, no email body/sender/subject/tool-arguments/secrets in any of
+them:
+
+- `event=mail_fetch_failed` — `fetchUnread()` threw.
+- `event=mail_message_processing_failed` — one message's processing (agent/reply/mark-seen)
+  threw; the rest of the batch still runs.
+- `event=agent_mail_seen ref=<sha256>` — message fully processed; `ref` is a hash of the
+  message id, never the id itself.
+- `event=agent_tool_call tool=<name>` — a registered tool was invoked.
+- `event=llm_failed` — the LLM call threw or timed out.
+- `event=poll_cycle_failed` — a whole poll cycle threw; the loop keeps running.
+
+`FileAuditJournal` entries store only `eventKey`, `hashedMessageRef` (SHA-256 of the message
+id), `toolName` (the resolved tool's own name, never an arbitrary string from the LLM), and a
+timestamp.
+
+Tool errors reaching the LLM are always generic, static strings (`"Error: invalid tool
+arguments"`, `"Error: tool execution failed"`) — `Agent.run` discards the actual exception
+message rather than forwarding it, so a tool that puts sensitive data in an exception message
+still can't leak it into the LLM conversation (see `AgentToolErrorHandlingTest`).
 
 ## Idempotency
 
-По стабильному `msg.getId()` (Outlook `EntryID`), не по хэшу содержимого письма — письмо с
-одинаковым текстом, но другим id, обрабатывается заново; повторная доставка/повторный опрос
-того же id — пропускается через `SeenStore.isSeen()`.
+Keyed by the stable `msg.getId()` (Outlook `EntryID`), not message content — same text with a
+different id is processed again; the same id, refetched or redelivered, is skipped via
+`SeenStore.isSeen()`. The pending-reply mechanism (see "Processing one message" above) additionally
+protects against replaying side-effecting tools when only the delivery step needs retrying.
 
-## Logging / audit
+## Adding a new tool
 
-- SLF4J + Logback, структурные `event=...` ключи (`event=agent_tool_call tool=...`,
-  `event=agent_mail_seen ref=<sha256>`, `event=mail_fetch_failed`, `event=mail_reply_failed`,
-  `event=llm_failed`) — без тела письма, sender, subject, tool-аргументов или секретов.
-- `FileAuditJournal` хранит только: `eventKey` (фиксированный литерал), `hashedMessageRef`
-  (SHA-256 от message id), `toolName` (только имя уже найденного в `ToolRegistry` инструмента —
-  не произвольная строка от LLM) и `timestamp`. Ошибки LLM (`Agent`) и ошибки tool-вызовов не
-  прокидывают внутренние provider-детали или сырые исключения пользователю/в LLM-историю дальше
-  необходимого (см. `AgentToolErrorHandlingTest`).
+1. Implement `com.testtask.outlookagent.tool.Tool`: `getName()`, `execute(Map<String, Object>
+   args)`, optionally `getDescription()`/`getParametersSchema()` (JSON Schema for the LLM's
+   function-calling).
+2. Validate arguments at the top of `execute()` and throw `IllegalArgumentException` on
+   failure — `Agent` never forwards the exception's message to the LLM, only a fixed generic
+   string, so this is safe by construction (still avoid putting anything sensitive in the
+   message on principle).
+3. Register it in `ApplicationFactory.create(...)` via `toolRegistry.register(new MyTool(...))`.
+4. Write the TDD test first, following `AddReminderToolTest`/`FindItemsToolTest`.
 
-## Известное ограничение: crash-window между reply и seen-write
+## How I worked with AI
 
-См. раздел «Flow одного письма» — между успешной отправкой ответа и durable-записью в
-`SeenStore` нет атомарности. При падении процесса именно в этом окне возможен повторный ответ на
-то же письмо при следующем запуске. Осознанный компромисс, не дефект.
+Done in Claude Code, one stage of `PLAN.md` at a time, with `/clear` between stages to avoid
+carrying over context from earlier work.
 
-## Статус реального Outlook
-
-`requires target environment verification` — интеграция с реальным Outlook через JACOB не
-проверялась вживую в этой сессии (нет целевой Windows/Outlook-среды с установленным
-JACOB native runtime). Тесты через `MockMailChannel`/фейковый `OutlookComFacade` таким
-подтверждением не являются.
-
-## Как добавить новый Tool
-
-1. Реализовать интерфейс `com.testtask.outlookagent.tool.Tool`: `getName()`,
-   `execute(Map<String, Object> args)`, опционально `getDescription()` и
-   `getParametersSchema()` (JSON Schema для function-calling у LLM).
-2. Валидировать аргументы в начале `execute()` и бросать `IllegalArgumentException` со
-   **статическим**, безопасным текстом (без эха произвольных значений аргументов — `Agent`
-   прокидывает `e.getMessage()` дальше в LLM-историю как есть, см. `Agent.run`).
-3. Зарегистрировать инструмент через `toolRegistry.register(new MyTool(...))` в
-   `ApplicationFactory.create(...)`.
-4. Написать TDD-тест по образцу `AddReminderToolTest`/`FindItemsToolTest` до реализации.
-
-## Как я работал с ИИ
-
-Работа велась через Claude Code, по этапам из `PLAN.md`, каждый — в отдельной сессии
-(`/clear` между блоками, чтобы не накапливать контекст прошлых этапов). Для каждого этапа:
-
-1. **Plan-first** — перед кодом фиксировался scope этапа и то, что явно вне scope.
-2. **TDD RED → GREEN** — сначала падающий тест, описывающий контракт, затем минимальный
-   production-код, делающий его зелёным; переход red → green — отдельными коммитами (см.
-   `git log`, пары `test: ...` / `feat: ...`).
-3. Перед использованием библиотечного API (JACOB, Jackson/SnakeYAML, maven-shade-plugin) —
-   сверка с официальной документацией/провенансом, а не по памяти.
-4. Небольшие, изолированные логические этапы — один этап = один срез функциональности, без
-   забегания вперёд на будущие этапы.
-5. Финальный этап — самопроверка качества (секреты/ПДн в логах, инъекции через tool-аргументы)
-   перед документацией и packaging.
+1. **Plan-first** — scope and explicit out-of-scope fixed before writing code for each stage.
+2. **TDD, red → green** — a failing test describing the contract, then the minimal code to pass
+   it, as separate commits (see `git log`: paired `test: ...` / `fix:`/`feat: ...` commits).
+3. Checked official docs/provenance before using a library API (JACOB, Jackson/SnakeYAML,
+   maven-shade-plugin) rather than relying on memory.
+4. Kept stages small and isolated — one stage, one slice of functionality, no reaching ahead.
+5. Final stage: a self-review for secrets/PII in logs and injection via tool arguments, before
+   docs and packaging.
