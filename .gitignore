@@ -15,3 +15,5 @@ dependency-reduced-pom.xml
 credentials.json
 secrets.yml
 secrets.yaml
+
+config.yaml

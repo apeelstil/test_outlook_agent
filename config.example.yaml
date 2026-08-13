@@ -1,0 +1,16 @@
+llm:
+  endpoint: "https://api.example.com/v1/chat/completions"
+  model: "gpt-4o-mini"
+  apiKeyEnv: "OUTLOOK_AGENT_LLM_API_KEY"
+  timeoutMs: 15000
+
+agent:
+  maxSteps: 5
+
+store:
+  path: "./data/reminders.json"
+
+mail:
+  pollSeconds: 30
+  profile: "Outlook"
+  folder: "Inbox"
