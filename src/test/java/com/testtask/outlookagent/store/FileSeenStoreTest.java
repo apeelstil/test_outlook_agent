@@ -70,6 +70,19 @@ public class FileSeenStoreTest {
         assertFalse(store.isSeen("id-1"));
     }
 
+    @Test
+    public void markSeenCreatesMissingParentDirectoriesOnFirstRunAndPersistsAcrossRestart() {
+        File nestedStoreFile = new File(temporaryFolder.getRoot(), "nested/does-not-exist-yet/seen.json");
+        SeenStore store = new FileSeenStore(nestedStoreFile.toPath());
+
+        store.markSeen("id-1");
+
+        assertTrue(store.isSeen("id-1"));
+
+        SeenStore reopenedAfterRestart = new FileSeenStore(nestedStoreFile.toPath());
+        assertTrue(reopenedAfterRestart.isSeen("id-1"));
+    }
+
     private java.nio.file.Path seenFilePath() {
         return new File(temporaryFolder.getRoot(), "seen.json").toPath();
     }

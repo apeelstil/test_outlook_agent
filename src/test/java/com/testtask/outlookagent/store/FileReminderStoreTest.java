@@ -38,4 +38,18 @@ public class FileReminderStoreTest {
         assertEquals("call sample contact", foundInSecondStore.get(0).getText());
         assertEquals("2026-08-14T07:00:00Z", foundInSecondStore.get(0).getDueIso());
     }
+
+    @Test
+    public void addCreatesMissingParentDirectoriesOnFirstRunAndPersistsAcrossRestart() {
+        File nestedStoreFile = new File(temporaryFolder.getRoot(), "nested/does-not-exist-yet/reminders.json");
+        FileReminderStore firstStore = new FileReminderStore(nestedStoreFile.toPath());
+
+        firstStore.add(new Reminder("call sample contact", "2026-08-14T07:00:00Z"));
+
+        FileReminderStore secondStore = new FileReminderStore(nestedStoreFile.toPath());
+        List<Reminder> foundAfterRestart = secondStore.find("sample contact");
+
+        assertTrue(!foundAfterRestart.isEmpty());
+        assertEquals("call sample contact", foundAfterRestart.get(0).getText());
+    }
 }

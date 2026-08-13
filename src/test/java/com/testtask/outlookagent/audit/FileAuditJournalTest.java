@@ -104,6 +104,20 @@ public class FileAuditJournalTest {
         assertFalse(restarted.verifyChainIntegrity());
     }
 
+    @Test
+    public void appendCreatesMissingParentDirectoriesOnFirstRunAndPersistsAcrossRestart() {
+        Path nestedPath = new File(temporaryFolder.getRoot(), "nested/does-not-exist-yet/audit.log").toPath();
+        AuditJournal journal = new FileAuditJournal(nestedPath);
+
+        journal.append(new AuditEvent("agent_mail_seen", "hash-ref-1", null, 1000L));
+
+        AuditJournal reopenedAfterRestart = new FileAuditJournal(nestedPath);
+        List<AuditEntry> entries = reopenedAfterRestart.readAll();
+
+        assertEquals(1, entries.size());
+        assertEquals("agent_mail_seen", entries.get(0).getEvent().getEventKey());
+    }
+
     private Path journalPath() {
         return new File(temporaryFolder.getRoot(), "audit.log").toPath();
     }
