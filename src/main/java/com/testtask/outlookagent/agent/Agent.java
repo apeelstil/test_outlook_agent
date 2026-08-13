@@ -40,6 +40,8 @@ public class Agent {
             }
 
             ToolCall toolCall = response.getToolCall();
+            messages.add(LlmMessage.assistantToolCall(toolCall));
+
             Optional<Tool> tool = toolRegistry.findByName(toolCall.getToolName());
             if (!tool.isPresent()) {
                 messages.add(LlmMessage.toolResult("Error: unknown tool requested", toolCall.getId()));

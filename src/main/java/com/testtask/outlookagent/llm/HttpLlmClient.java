@@ -49,13 +49,24 @@ public class HttpLlmClient implements LlmClient {
         ArrayNode messagesNode = root.putArray("messages");
         for (LlmMessage message : messages) {
             ObjectNode messageNode = messagesNode.addObject();
-            if (message.isToolResult()) {
+            if (message.isAssistantToolCall()) {
+                ToolCall toolCall = message.getAssistantToolCall();
+                messageNode.put("role", "assistant");
+                ArrayNode toolCallsNode = messageNode.putArray("tool_calls");
+                ObjectNode toolCallNode = toolCallsNode.addObject();
+                toolCallNode.put("id", toolCall.getId());
+                toolCallNode.put("type", "function");
+                ObjectNode functionNode = toolCallNode.putObject("function");
+                functionNode.put("name", toolCall.getToolName());
+                functionNode.put("arguments", serializeArguments(toolCall.getArguments()));
+            } else if (message.isToolResult()) {
                 messageNode.put("role", "tool");
                 messageNode.put("tool_call_id", message.getToolCallId());
+                messageNode.put("content", message.getContent());
             } else {
                 messageNode.put("role", "user");
+                messageNode.put("content", message.getContent());
             }
-            messageNode.put("content", message.getContent());
         }
 
         if (tools != null && !tools.isEmpty()) {
@@ -74,6 +85,14 @@ public class HttpLlmClient implements LlmClient {
             return mapper.writeValueAsString(root);
         } catch (IOException e) {
             throw new LlmClientException("Failed to serialize LLM request");
+        }
+    }
+
+    private String serializeArguments(Map<String, Object> arguments) {
+        try {
+            return mapper.writeValueAsString(arguments == null ? java.util.Collections.emptyMap() : arguments);
+        } catch (IOException e) {
+            throw new LlmClientException("Failed to serialize tool call arguments");
         }
     }
 
