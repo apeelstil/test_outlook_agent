@@ -21,4 +21,9 @@ public class Reminder {
     public String getDueIso() {
         return dueIso;
     }
+
+    @Override
+    public String toString() {
+        return text + " (due " + dueIso + ")";
+    }
 }
