@@ -1,0 +1,16 @@
+target/
+
+*.class
+
+.idea/
+*.iml
+.vscode/
+.settings/
+.project
+.classpath
+
+.env
+*.env
+credentials.json
+secrets.yml
+secrets.yaml
