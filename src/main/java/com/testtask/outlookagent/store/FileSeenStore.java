@@ -51,6 +51,10 @@ public class FileSeenStore implements SeenStore {
     private void writeAll(Set<String> seenIds) {
         try {
             byte[] json = OBJECT_MAPPER.writeValueAsBytes(seenIds);
+            Path parent = path.getParent();
+            if (parent != null) {
+                Files.createDirectories(parent);
+            }
             Files.write(path, json);
         } catch (IOException e) {
             throw new UncheckedIOException(e);

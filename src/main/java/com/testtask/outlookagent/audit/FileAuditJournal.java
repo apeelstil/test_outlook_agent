@@ -35,6 +35,10 @@ public class FileAuditJournal implements AuditJournal {
         String line = serialize(event, previousHash, hash);
         try {
             if (!Files.exists(path)) {
+                Path parent = path.getParent();
+                if (parent != null) {
+                    Files.createDirectories(parent);
+                }
                 Files.createFile(path);
             }
             Files.write(path, (line + System.lineSeparator()).getBytes(StandardCharsets.UTF_8),

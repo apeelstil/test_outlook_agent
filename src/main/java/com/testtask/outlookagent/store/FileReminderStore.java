@@ -57,6 +57,10 @@ public class FileReminderStore {
     private void writeAll(List<Reminder> reminders) {
         try {
             byte[] json = OBJECT_MAPPER.writeValueAsBytes(reminders);
+            Path parent = path.getParent();
+            if (parent != null) {
+                Files.createDirectories(parent);
+            }
             Files.write(path, json);
         } catch (IOException e) {
             throw new UncheckedIOException(e);
