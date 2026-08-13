@@ -109,6 +109,39 @@ public class AgentToolErrorHandlingTest {
                 errorContent.contains("boom-test-failure"));
     }
 
+    @Test
+    public void neverLeaksRawToolArgumentExceptionMessageToLlm() {
+        SecretLeakingTool secretLeakingTool = new SecretLeakingTool();
+        ToolRegistry registry = new ToolRegistry();
+        registry.register(secretLeakingTool);
+
+        ToolCall secretCall = new ToolCall("secret_leaking_tool", new HashMap<String, Object>());
+
+        RecordingMockLlmClient llmClient = new RecordingMockLlmClient(
+                LlmResponse.toolCall(secretCall),
+                LlmResponse.finalAnswer("Handled invalid arguments"));
+
+        Agent agent = new Agent(llmClient, registry, 3);
+
+        String result = agent.run("please call the secret leaking tool");
+
+        assertEquals("Handled invalid arguments", result);
+        assertEquals(2, llmClient.callCount());
+
+        LlmMessage toolResultMessage = findToolResultMessage(llmClient.messagesForCall(1));
+        assertTrue("Second LLM call must include a tool-result message describing the error",
+                toolResultMessage != null);
+        String errorContent = toolResultMessage.getContent().toLowerCase();
+        assertTrue("Error content should indicate invalid tool arguments via a generic marker",
+                errorContent.contains("invalid") && errorContent.contains("argument"));
+
+        for (LlmMessage message : llmClient.messagesForCall(1)) {
+            String content = message.getContent();
+            assertFalse("No message sent to the next LLM call may contain the raw exception message",
+                    content != null && content.contains(SecretLeakingTool.SECRET_MESSAGE));
+        }
+    }
+
     private static LlmMessage findToolResultMessage(List<LlmMessage> messages) {
         for (LlmMessage message : messages) {
             if (message.isToolResult()) {
@@ -152,6 +185,21 @@ public class AgentToolErrorHandlingTest {
         @Override
         public Object execute(Map<String, Object> args) {
             throw new RuntimeException("boom-test-failure");
+        }
+    }
+
+    private static class SecretLeakingTool implements Tool {
+
+        static final String SECRET_MESSAGE = "secret-user-value-123";
+
+        @Override
+        public String getName() {
+            return "secret_leaking_tool";
+        }
+
+        @Override
+        public Object execute(Map<String, Object> args) {
+            throw new IllegalArgumentException(SECRET_MESSAGE);
         }
     }
 
