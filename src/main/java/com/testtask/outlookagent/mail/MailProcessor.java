@@ -47,28 +47,30 @@ public class MailProcessor {
                 continue;
             }
 
-            Optional<String> pendingReply = seenStore.getPendingReply(msg.getId());
-            String replyBody;
-            if (pendingReply.isPresent()) {
-                replyBody = pendingReply.get();
-            } else {
-                replyBody = agent.run(msg.getBody());
-                seenStore.savePendingReply(msg.getId(), replyBody);
-            }
-
             try {
-                mailChannel.reply(msg, replyBody);
+                processMessage(msg);
             } catch (RuntimeException e) {
-                logger.warn("event=mail_reply_failed");
-                continue;
+                logger.warn("event=mail_message_processing_failed");
             }
-
-            seenStore.markSeen(msg.getId());
-
-            String hashedRef = hashMessageId(msg.getId());
-            logger.info("event=agent_mail_seen ref={}", hashedRef);
-            auditJournal.append(new AuditEvent("agent_mail_seen", hashedRef, null, System.currentTimeMillis()));
         }
+    }
+
+    private void processMessage(Msg msg) {
+        Optional<String> pendingReply = seenStore.getPendingReply(msg.getId());
+        String replyBody;
+        if (pendingReply.isPresent()) {
+            replyBody = pendingReply.get();
+        } else {
+            replyBody = agent.run(msg.getBody());
+            seenStore.savePendingReply(msg.getId(), replyBody);
+        }
+
+        mailChannel.reply(msg, replyBody);
+        seenStore.markSeen(msg.getId());
+
+        String hashedRef = hashMessageId(msg.getId());
+        logger.info("event=agent_mail_seen ref={}", hashedRef);
+        auditJournal.append(new AuditEvent("agent_mail_seen", hashedRef, null, System.currentTimeMillis()));
     }
 
     private static String hashMessageId(String messageId) {
